@@ -1,4 +1,4 @@
-# GeneContent
+# GeneContent (relevant for search_gene_content_v4.0.py)
 Dependecies: argparse, numpy, pandas, pysam, transformers.
 
 Usage: $ python3 search_gene_content_v4.0.py --gff=[gff] --fasta=[fasta] --fai=[fai] --inp=[tokens] --shift=[shift] > output.txt
