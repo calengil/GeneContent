@@ -1,7 +1,8 @@
 #!/usr/bin/env python
-
+# -*- coding: utf-8 -*-
 import argparse
 
+import h5py
 import numpy as np
 import pandas as pd
 import pysam
@@ -12,7 +13,14 @@ parser.add_argument("--gff", type=str, help="Path to GFF file")
 parser.add_argument("--fasta", type=str, help="Path to FASTA file")
 parser.add_argument("--fai", type=str, help="Path to FAI file")
 parser.add_argument("--inp", type=int, default=512, help="number of input tokens")
+parser.add_argument("--output", type=str, help="Path to output HDF5 file")
 parser.add_argument("--shift", type=int, default=256, help="shift")
+parser.add_argument(
+    "--tokenizer_name",
+    type=str,
+    default="AIRI-Institute/gena-lm-bert-large-t2t",
+    help="tokenizer",
+)
 parser.add_argument("--radius", type=int, default=64, help="radius")
 args = parser.parse_args()
 
@@ -29,15 +37,11 @@ col_names = [
 ]
 data = pd.read_csv(args.gff, sep="\t", names=col_names, header=None, comment="#")
 ref = pysam.Fastafile(args.fasta)
-tokenizer = AutoTokenizer.from_pretrained("AIRI-Institute/gena-lm-bert-large-t2t")
+tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
 chromsizes = pd.read_csv(args.fai, sep="\t", header=None)
 
 trans_class_dict = {
-    "primary_transcript": "pre_miRNA",
     "lnc_RNA": "lnc_RNA",
-    "miRNA": "miRNA",
-    "transcript": "miscRNA",
-    "snoRNA": "snoRNA",
     "mRNA": "mRNA",
 }
 
@@ -56,17 +60,13 @@ data = pd.concat((data, new_cols), axis=1)
 
 data_grouped = data.groupby("Parent")
 
-data_pre_miRNA = data["type"] == "primary_transcript"
 data_lnc_RNA = data["type"] == "lnc_RNA"
-data_miRNA = data["type"] == "miRNA"
-data_miscRNA = data["type"] == "transcript"
-data_snoRNA = data["type"] == "snoRNA"
 data_mRNA = data["type"] == "mRNA"
-transcript_name_mask = (
-    data_miscRNA | data_mRNA | data_pre_miRNA | data_lnc_RNA | data_snoRNA | data_miRNA
-)
+transcript_name_mask = data_mRNA | data_lnc_RNA
 
 valid_transcripts = data[transcript_name_mask]["ID"].unique()
+np.set_printoptions(threshold=np.inf)
+
 assert (
     len(
         np.intersect1d(
@@ -77,6 +77,62 @@ assert (
     == 0
 )
 transcripts_index = data[transcript_name_mask].set_index("ID")
+
+
+# Special tokens
+def get_service_token_encodings(tokenizer):
+    SEP_token_id = tokenizer.sep_token_id
+    CLS_token_id = tokenizer.cls_token_id
+
+    CLS_encoding = {
+        "input_ids": np.array(CLS_token_id).reshape(-1, 1),
+        "token_type_ids": np.array([0]).reshape(-1, 1),
+        "attention_mask": np.array([1]).reshape(-1, 1),
+    }
+
+    SEP_encoding = {
+        "input_ids": np.array(SEP_token_id).reshape(-1, 1),
+        "token_type_ids": np.array([0]).reshape(-1, 1),
+        "attention_mask": np.array([1]).reshape(-1, 1),
+    }
+
+    return {"CLS": CLS_encoding, "SEP": SEP_encoding}
+
+
+# Add special tokens
+def select_tokens(
+    tokens_for_choosing,
+    first_selected_token_index,
+    last_selected_token_index,
+    special_tokens,
+):
+    token_ids = np.array(
+        transcript_part_tokens["input_ids"][
+            first_selected_token_index : last_selected_token_index + 1
+        ]
+    )
+    token_types = np.array(
+        transcript_part_tokens["token_type_ids"][
+            first_selected_token_index : last_selected_token_index + 1
+        ]
+    )
+    attention_mask = np.array(
+        transcript_part_tokens["attention_mask"][
+            first_selected_token_index : last_selected_token_index + 1
+        ]
+    )
+
+    token_ids = np.insert(token_ids, 0, special_tokens["CLS"]["input_ids"])
+    token_types = np.insert(token_types, 0, special_tokens["CLS"]["token_type_ids"])
+    attention_mask = np.insert(
+        attention_mask, 0, special_tokens["CLS"]["attention_mask"]
+    )
+
+    token_ids = np.append(token_ids, special_tokens["SEP"]["input_ids"])
+    token_types = np.append(token_types, special_tokens["SEP"]["token_type_ids"])
+    attention_mask = np.append(attention_mask, special_tokens["SEP"]["attention_mask"])
+
+    return token_ids, token_types, attention_mask
 
 
 # Get part of DNA sequence
@@ -106,7 +162,7 @@ def tokenize_sequence(
         DNA_seq, add_special_tokens=False, return_offsets_mapping=True
     )
     mapping_tokens = token_to_chars["offset_mapping"]
-    while len(mapping_tokens) < args.inp:
+    while len(mapping_tokens) < args.inp - 2:
         if start_seq > 0:
             if start_seq - 500 >= 0:
                 start_seq = start_seq - 500
@@ -150,7 +206,7 @@ def select_part(token_to_chars, center, inp):
     right_len = central_token[1] - center
     left_len = center - central_token[0]
 
-    while count_of_tokens < inp:
+    while count_of_tokens < inp - 2:
         if (
             tokens_for_classing[0] == mapping_tokens[0]
             and tokens_for_classing[-1] == mapping_tokens[-1]
@@ -305,7 +361,7 @@ def classification_forward(
         for l_index, label in enumerate(class_lables):
             if label in final_token_class[tok_index]:
                 classes[l_index, tok_index] = 1
-
+    classes = np.array(classes)
     return classes
 
 
@@ -387,112 +443,177 @@ def classification_reverse(
 
 
 # Let's do it
+with h5py.File(args.output, "w") as file:
+    run_info = file.create_group("run_info")
+    array_run_info = [
+        "GFF=" + args.gff,
+        "FASTA=" + args.fasta,
+        "FAI=" + args.fai,
+        "number of input tokens=" + str(args.inp),
+        "output HDF5=" + args.output,
+        "shift=" + str(args.shift),
+        "tokenizer=" + args.tokenizer_name,
+        "radius=" + str(args.radius),
+    ]
+    array_info = run_info.create_dataset("info", data=array_run_info)
 
-for transcript in valid_transcripts:
-    transcript_name = transcript
-    transcript_content = data_grouped.get_group(transcript)
-    transcript_info = transcripts_index.loc[transcript]
-    gene = transcript_info["Parent"]
-    transcript_strand = transcript_info["strand"]
-    transcript_chr = transcript_info["seqid"]
-    transcript_class = transcript_info["type"]
-    if transcript_strand == "+":
-        transcript_start = transcript_info["start"]
-        transcript_end = transcript_info["end"]
-    elif transcript_strand == "-":
-        transcript_start = transcript_info["end"]
-        transcript_end = transcript_info["start"]
-    assert (
-        transcript_strand == "+" or transcript_strand == "-"
-    ), "Not identifited strand"
+    transcripts_records = file.create_group("records")
+    for transcript in valid_transcripts:
+        index_sample = 0
+        group = transcripts_records.create_group(transcript)
+        transcript_name = transcript
+        transcript_content = data_grouped.get_group(transcript)
+        transcript_info = transcripts_index.loc[transcript]
+        gene = transcript_info["Parent"]
+        transcript_strand = transcript_info["strand"]
+        transcript_chr = transcript_info["seqid"]
+        transcript_class = transcript_info["type"]
+        if transcript_strand == "+":
+            transcript_start = transcript_info["start"]
+            transcript_end = transcript_info["end"]
+        elif transcript_strand == "-":
+            transcript_start = transcript_info["end"]
+            transcript_end = transcript_info["start"]
+        assert (
+            transcript_strand == "+" or transcript_strand == "-"
+        ), "Not identifited strand"
 
-    (
-        first_exon_start,
-        last_exon_end,
-        first_cds_start,
-        last_cds_end,
-    ) = search_exons_end_cds(transcript_content, transcript_strand)
-    start_for_tokenize = transcript_start
-    end_out = transcript_end
-    start_out = transcript_end
+        (
+            first_exon_start,
+            last_exon_end,
+            first_cds_start,
+            last_cds_end,
+        ) = search_exons_end_cds(transcript_content, transcript_strand)
+        start_for_tokenize = transcript_start
+        end_out = transcript_end
+        start_out = transcript_end
+        transcript_stats = [
+            transcript_chr,
+            gene,
+            transcript_name,
+            trans_class_dict[transcript_class],
+            transcript_strand,
+        ]
 
-    if transcript_strand == "+":
-        while end_out <= transcript_end:
-            transcript_part_tokens, center = tokenize_sequence(
-                transcript_name,
-                start_for_tokenize,
-                args.inp,
-                transcript_chr,
-                chromsizes,
-                ref,
-                args.radius,
-            )
-            if len(transcript_part_tokens["offset_mapping"]) < args.inp:
-                break
-            assert len(transcript_part_tokens["offset_mapping"]) >= args.inp
-            selected_tokens_coor = select_part(transcript_part_tokens, center, args.inp)
-            classes = classification_forward(
-                selected_tokens_coor,
-                transcript_content,
-                first_exon_start,
-                last_exon_end,
-                first_cds_start,
-                last_cds_end,
-                start_for_tokenize,
-                center,
-            )
-            start_out = start_for_tokenize - center + selected_tokens_coor[0][0]
-            end_out = start_for_tokenize - center + selected_tokens_coor[-1][1]
-            token_ids = transcript_part_tokens["input_ids"]
-            token_types = transcript_part_tokens["token_type_ids"]
-            attention_mask = transcript_part_tokens["attention_mask"]
-            first_selected_token_index = transcript_part_tokens["offset_mapping"].index(
-                selected_tokens_coor[0]
-            )
-            last_selected_token_index = transcript_part_tokens["offset_mapping"].index(
-                selected_tokens_coor[-1]
-            )
-            print(
-                f"{gene}\t{transcript_name}\t{trans_class_dict[transcript_class]}\t{transcript_chr}\t{transcript_strand}\t{int(start_out)}\t{int(end_out)}\t{token_ids[first_selected_token_index:last_selected_token_index + 1]}\t{token_types[first_selected_token_index:last_selected_token_index + 1]}\t{attention_mask[first_selected_token_index:last_selected_token_index + 1]}\t{classes[0].tolist()}\t{classes[1].tolist()}\t{classes[2].tolist()}\t{classes[3].tolist()}\t{classes[4].tolist()}\t{classes[5].tolist()}"
-            )
-            start_for_tokenize += args.shift
-    elif transcript_strand == "-":
-        while start_out >= transcript_end:
-            transcript_part_tokens, center = tokenize_sequence(
-                transcript_name,
-                start_for_tokenize,
-                args.inp,
-                transcript_chr,
-                chromsizes,
-                ref,
-                args.radius,
-            )
-            if len(transcript_part_tokens["offset_mapping"]) < args.inp:
-                break
-            assert len(transcript_part_tokens["offset_mapping"]) >= args.inp
-            selected_tokens_coor = select_part(transcript_part_tokens, center, args.inp)
-            classes = classification_reverse(
-                selected_tokens_coor,
-                transcript_content,
-                first_exon_start,
-                last_exon_end,
-                first_cds_start,
-                last_cds_end,
-                start_for_tokenize,
-                center,
-            )
-            start_out = start_for_tokenize - center + selected_tokens_coor[0][0]
-            end_out = start_for_tokenize - center + selected_tokens_coor[-1][1]
-            token_ids = transcript_part_tokens["input_ids"]
-            token_types = transcript_part_tokens["token_type_ids"]
-            attention_mask = transcript_part_tokens["attention_mask"]
-            first_selected_token_index = transcript_part_tokens["offset_mapping"].index(
-                selected_tokens_coor[0]
-            )
-            last_selected_token_index = transcript_part_tokens["offset_mapping"].index(
-                selected_tokens_coor[-1]
-            )
-            print(
-                f"{gene}\t{transcript_name}\t{trans_class_dict[transcript_class]}\t{transcript_chr}\t{transcript_strand}\t{int(start_out)}\t{int(end_out)}\t{token_ids[first_selected_token_index:last_selected_token_index + 1]}\t{token_types[first_selected_token_index:last_selected_token_index + 1]}\t{attention_mask[first_selected_token_index:last_selected_token_index + 1]}\t{classes[0].tolist()}\t{classes[1].tolist()}\t{classes[2].tolist()}\t{classes[3].tolist()}\t{classes[4].tolist()}\t{classes[5].tolist()}"
-            )
-            start_for_tokenize -= args.shift
+        if transcript_strand == "+":
+            while end_out <= transcript_end:
+                transcript_part_tokens, center = tokenize_sequence(
+                    transcript_name,
+                    start_for_tokenize,
+                    args.inp,
+                    transcript_chr,
+                    chromsizes,
+                    ref,
+                    args.radius,
+                )
+                if len(transcript_part_tokens["offset_mapping"]) < args.inp - 2:
+                    break
+                assert len(transcript_part_tokens["offset_mapping"]) >= args.inp - 2
+                selected_tokens_coor = select_part(
+                    transcript_part_tokens, center, args.inp
+                )
+                classes = classification_forward(
+                    selected_tokens_coor,
+                    transcript_content,
+                    first_exon_start,
+                    last_exon_end,
+                    first_cds_start,
+                    last_cds_end,
+                    start_for_tokenize,
+                    center,
+                )
+                start_out = start_for_tokenize - center + selected_tokens_coor[0][0]
+                end_out = start_for_tokenize - center + selected_tokens_coor[-1][1]
+                first_selected_token_index = transcript_part_tokens[
+                    "offset_mapping"
+                ].index(selected_tokens_coor[0])
+                last_selected_token_index = transcript_part_tokens[
+                    "offset_mapping"
+                ].index(selected_tokens_coor[-1])
+
+                special_tokens = get_service_token_encodings(tokenizer)
+                token_ids, token_types, attention_mask = select_tokens(
+                    transcript_part_tokens,
+                    first_selected_token_index,
+                    last_selected_token_index,
+                    special_tokens,
+                )
+                coordinates = [int(start_out), int(end_out)]
+
+                subgrp = group.create_group(f"sample_{index_sample}")
+
+                array_info = subgrp.create_dataset("info", data=transcript_stats)
+                array_coordinates = subgrp.create_dataset(
+                    "coordinates", data=coordinates
+                )
+                array_ids = subgrp.create_dataset("token_ids", data=token_ids)
+                array_types = subgrp.create_dataset("token_types", data=token_types)
+                array_mask = subgrp.create_dataset(
+                    "attention_mask", data=attention_mask
+                )
+                array_classes = subgrp.create_dataset("classes", data=classes)
+
+                index_sample += 1
+
+                start_for_tokenize += args.shift
+
+        elif transcript_strand == "-":
+            while start_out >= transcript_end:
+                transcript_part_tokens, center = tokenize_sequence(
+                    transcript_name,
+                    start_for_tokenize,
+                    args.inp,
+                    transcript_chr,
+                    chromsizes,
+                    ref,
+                    args.radius,
+                )
+                if len(transcript_part_tokens["offset_mapping"]) < args.inp - 2:
+                    break
+                assert len(transcript_part_tokens["offset_mapping"]) >= args.inp - 2
+                selected_tokens_coor = select_part(
+                    transcript_part_tokens, center, args.inp
+                )
+                classes = classification_reverse(
+                    selected_tokens_coor,
+                    transcript_content,
+                    first_exon_start,
+                    last_exon_end,
+                    first_cds_start,
+                    last_cds_end,
+                    start_for_tokenize,
+                    center,
+                )
+                start_out = start_for_tokenize - center + selected_tokens_coor[0][0]
+                end_out = start_for_tokenize - center + selected_tokens_coor[-1][1]
+                first_selected_token_index = transcript_part_tokens[
+                    "offset_mapping"
+                ].index(selected_tokens_coor[0])
+                last_selected_token_index = transcript_part_tokens[
+                    "offset_mapping"
+                ].index(selected_tokens_coor[-1])
+
+                special_tokens = get_service_token_encodings(tokenizer)
+                token_ids, token_types, attention_mask = select_tokens(
+                    transcript_part_tokens,
+                    first_selected_token_index,
+                    last_selected_token_index,
+                    special_tokens,
+                )
+                coordinates = [int(start_out), int(end_out)]
+
+                subgrp = group.create_group(f"sample_{index_sample}")
+                array_info = subgrp.create_dataset("info", data=transcript_stats)
+                array_coordinates = subgrp.create_dataset(
+                    "coordinates", data=coordinates
+                )
+                array_ids = subgrp.create_dataset("token_ids", data=token_ids)
+                array_types = subgrp.create_dataset("token_types", data=token_types)
+                array_mask = subgrp.create_dataset(
+                    "attention_mask", data=attention_mask
+                )
+                array_classes = subgrp.create_dataset("classes", data=classes)
+
+                index_sample += 1
+
+                start_for_tokenize -= args.shift
