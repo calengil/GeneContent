@@ -21,6 +21,12 @@ Usage: $ python3 search_gene_content.py --gff=[gff] --fasta=[fasta] --fai=[fai] 
 
 **[radius]**: enter coefficient for choose part of DNA (default 64)
 
+There are 2 groups in the output hdf5 file:
+
+*/run_info/info* contains an array with 8 elements (run inforamation: gff file, fasta file, fai file, number of input tokens, hdf5 file, shift, tokenizer, radius)
+
+*/records* contains groups of samples named after transcript names. Example: */records/transcript_name/sample_0*
+
 ## decode_to_bed.py (now not supported)
 
 Dependecies: argparse, pandas, transformers.
@@ -32,3 +38,5 @@ Usage: $ python3 decode_to_bed.py --tokenized_seqs=[txt] > output.bed
 ## GenePredictionDataset.py
 
 Dependecies: numpy, torch.utils.data, h5py.
+
+
