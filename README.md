@@ -3,7 +3,7 @@
 
 Dependecies: argparse, h5py, numpy, pandas, pysam, transformers.
 
-Usage: $ python3 search_gene_content.py --gff=[gff] --fasta=[fasta] --fai=[fai] --inp=[tokens] --output=[output]--shift=[shift] --tokenizer_name=[tokenizer_name] --radius=[radius] 
+Usage: $ python3 search_gene_content.py --gff=[gff] --fasta=[fasta] --fai=[fai] --inp=[tokens] --output=[output] --shift=[shift] --tokenizer_name=[tokenizer_name] --radius=[radius] 
 
 **[gff]**: enter path to gff file
 
