@@ -33,11 +33,11 @@ There are 6 subgroups in each *sample_X*:
   
   */records/sample_X/coordinates* contains an array with 2 elements (part coordinates: [start, end])
 
-  */records/sample_X/token_ids* contains token_ids
+  */records/sample_X/token_ids* contains token_ids array
 
-  */records/sample_X/token_types* contains token_types_ids
+  */records/sample_X/token_types* contains token_types_ids array
 
-  */records/sample_X/attention_mask* contains attention_mask
+  */records/sample_X/attention_mask* contains attention_mask array
 
   */records/sample_X/classes* contains an array with  the classification of tokens (array size = count of classes x number of input tokens - 2)
 
