@@ -9,6 +9,7 @@ import pysam
 from transformers import AutoTokenizer
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--chrs", type=str, default="all", help="Select the chromosomes")
 parser.add_argument("--gff", type=str, help="Path to GFF file")
 parser.add_argument("--fasta", type=str, help="Path to FASTA file")
 parser.add_argument("--fai", type=str, help="Path to FAI file")
@@ -35,10 +36,17 @@ col_names = [
     "phase",
     "attributes",
 ]
-data = pd.read_csv(args.gff, sep="\t", names=col_names, header=None, comment="#")
+data = pd.read_csv(
+    args.gff, sep="\t", names=col_names, header=None, comment="#"
+)
 ref = pysam.Fastafile(args.fasta)
 tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
 chromsizes = pd.read_csv(args.fai, sep="\t", header=None)
+if args.chrs != "all":
+    selected_chrs = pd.read_csv(args.chrs, header=None)
+    selected_chrs = selected_chrs[0].tolist()
+    data = data[data["seqid"].isin(selected_chrs)]
+    data.reset_index(drop=True, inplace=True)
 
 trans_class_dict = {
     "lnc_RNA": "lnc_RNA",
@@ -362,6 +370,8 @@ def classification_forward(
             if label in final_token_class[tok_index]:
                 classes[l_index, tok_index] = 1
     classes = np.array(classes)
+    classes = np.insert(classes, 0, -100, axis=1)
+    classes = np.insert(classes, classes.shape[1], -100, axis=1)
     return classes
 
 
@@ -438,7 +448,9 @@ def classification_reverse(
         for l_index, label in enumerate(class_lables):
             if label in final_token_class[tok_index]:
                 classes[l_index, tok_index] = 1
-
+    classes = np.array(classes)
+    classes = np.insert(classes, 0, -100, axis=1)
+    classes = np.insert(classes, classes.shape[1], -100, axis=1)
     return classes
 
 
@@ -613,6 +625,10 @@ with h5py.File(args.output, "w") as file:
                     "attention_mask", data=attention_mask
                 )
                 array_classes = subgrp.create_dataset("classes", data=classes)
+
+                index_sample += 1
+
+                start_for_tokenize -= args.shift
 
                 index_sample += 1
 
