@@ -3,7 +3,9 @@
 
 Dependecies: argparse, h5py, numpy, pandas, pysam, transformers.
 
-Usage: $ python3 search_gene_content.py --gff=[gff] --fasta=[fasta] --fai=[fai] --inp=[tokens] --output=[output] --shift=[shift] --tokenizer_name=[tokenizer_name] --radius=[radius] 
+Usage: $ python3 search_gene_content.py --chrs=[chromosomes] --gff=[gff] --fasta=[fasta] --fai=[fai] --inp=[tokens] --output=[output] --shift=[shift] --tokenizer_name=[tokenizer_name] --radius=[radius] 
+
+**[chromosomes]**: enter path to txt file with chosen chromosomes names
 
 **[gff]**: enter path to gff file
 
@@ -39,7 +41,7 @@ There are 6 subgroups in each *sample_X*:
 
   */records/transcript_name/sample_X/attention_mask* contains attention_mask array
 
-  */records/transcript_name/sample_X/classes* contains an array with  the classification of tokens (array size = count of classes x number of input tokens - 2)
+  */records/transcript_name/sample_X/classes* contains an array with  the classification of tokens (array size = count of classes x number of input tokens)
 
 ## decode_to_bed.py (now not supported)
 
