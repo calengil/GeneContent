@@ -17,7 +17,7 @@ Usage: $ python3 search_gene_content.py --chrs=[chromosomes] --gff=[gff] --fasta
 
 **[output]**: enter path to hdf5 file
 
-**[shift]**: enter step between tokenization points (default 256)
+**[shift]**: enter step between tokenization points (default half the length of the DNA segment)
 
 **[tokenizer_name]**: enter your tokenizer (default "AIRI-Institute/gena-lm-bert-large-t2t")
 
@@ -43,13 +43,13 @@ There are 6 subgroups in each *sample_X*:
 
   */records/transcript_name/sample_X/classes* contains an array with  the classification of tokens (array size = count of classes x number of input tokens)
 
-## decode_to_bed.py (now not supported)
+## decode_to_bed.py
 
-Dependecies: argparse, pandas, transformers.
+Dependecies: argparse, h5py, pandas, transformers.
 
-Usage: $ python3 decode_to_bed.py --tokenized_seqs=[txt] > output.bed
+Usage: $ python3 decode_to_bed.py --tokenized_seqs=[hdf5] > output.bed
 
-**[txt]**: enter path to search_gene_content.py output file
+**[hdf5]**: enter path to search_gene_content.py output file
 
 ## GenePredictionDataset.py
 
