@@ -6,16 +6,19 @@ import h5py
 import numpy as np
 import pandas as pd
 import pysam
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--chrs", type=str, default="all", help="Select the chromosomes")
+parser.add_argument(
+    "--chrs", type=str, default="all", help="Path to TXT file with chromosomes' names"
+)
 parser.add_argument("--gff", type=str, help="Path to GFF file")
 parser.add_argument("--fasta", type=str, help="Path to FASTA file")
 parser.add_argument("--fai", type=str, help="Path to FAI file")
 parser.add_argument("--inp", type=int, default=512, help="number of input tokens")
 parser.add_argument("--output", type=str, help="Path to output HDF5 file")
-parser.add_argument("--shift", type=int, default=256, help="shift")
+parser.add_argument("--shift", type=int, default=-1, help="shift")
 parser.add_argument(
     "--tokenizer_name",
     type=str,
@@ -24,6 +27,11 @@ parser.add_argument(
 )
 parser.add_argument("--radius", type=int, default=64, help="radius")
 args = parser.parse_args()
+
+if args.shift == -1:
+    shift = "half the length of the DNA segment"
+else:
+    shift = args.shift
 
 col_names = [
     "seqid",
@@ -36,9 +44,13 @@ col_names = [
     "phase",
     "attributes",
 ]
-data = pd.read_csv(
-    args.gff, sep="\t", names=col_names, header=None, comment="#"
-)
+data = pd.read_csv(args.gff, sep="\t", names=col_names, header=None, comment="#")
+data["start"] = (
+    data["start"] - 1
+)  # coodinates in GFF file are 1-based, convert to 0-based
+# data["end"] = data["end"] - 1 # do not substract from the end; intervals in GFF are closed, but now we can consider
+#                               them as half-opened intervals
+
 ref = pysam.Fastafile(args.fasta)
 tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
 chromsizes = pd.read_csv(args.fai, sep="\t", header=None)
@@ -107,6 +119,9 @@ def get_service_token_encodings(tokenizer):
     return {"CLS": CLS_encoding, "SEP": SEP_encoding}
 
 
+special_tokens = get_service_token_encodings(tokenizer)
+
+
 # Add special tokens
 def select_tokens(
     tokens_for_choosing,
@@ -145,23 +160,29 @@ def select_tokens(
 
 # Get part of DNA sequence
 def tokenize_sequence(
-    trans_name, start_for_tokenize, tokens_count, chr_name, chr_info, reference, radius
+    trans_name,
+    start_for_tokenize_d,
+    tokens_count,
+    chr_name,
+    chr_info,
+    reference,
+    radius,
 ):
-    start_seq = start_for_tokenize - radius * tokens_count
-    end_seq = start_for_tokenize + radius * tokens_count
+    start_seq_d = start_for_tokenize_d - radius * tokens_count
+    end_seq_d = start_for_tokenize_d + radius * tokens_count
 
     chr_length = chr_info[chr_info[0] == chr_name][1].values[0]
 
-    if start_seq < 0:
-        start_seq = 0
-    elif end_seq > chr_length:
-        end_seq = chr_length
+    if start_seq_d < 0:
+        start_seq_d = 0
+    elif end_seq_d > chr_length:
+        end_seq_d = chr_length
 
     assert (
-        end_seq <= chr_length and start_seq >= 0
+        end_seq_d < chr_length and start_seq_d >= 0
     ), "DNA beyond the boundaries of the chromosome"
 
-    DNA_seq = reference.fetch(reference=chr_name, start=start_seq, end=end_seq)
+    DNA_seq = reference.fetch(reference=chr_name, start=start_seq_d, end=end_seq_d)
     DNA_seq = DNA_seq.upper()
 
     # Tokenize part of DNA sequence
@@ -170,49 +191,52 @@ def tokenize_sequence(
         DNA_seq, add_special_tokens=False, return_offsets_mapping=True
     )
     mapping_tokens = token_to_chars["offset_mapping"]
-    while len(mapping_tokens) < args.inp - 2:
-        if start_seq > 0:
-            if start_seq - 500 >= 0:
-                start_seq = start_seq - 500
-            else:
-                start_seq = 0
-        if end_seq < chr_length:
-            if end_seq + 500 <= chr_length:
-                end_seq = end_seq + 500
-            else:
-                end_seq = chr_length
 
-        DNA_seq = reference.fetch(reference=chr_name, start=start_seq, end=end_seq)
+    while len(mapping_tokens) < args.inp - 2:
+        if start_seq_d > 0:
+            if start_seq_d - 500 >= 0:
+                start_seq_d = start_seq_d - 500
+            else:
+                start_seq_d = 0
+        if end_seq_d < chr_length:
+            if end_seq_d + 500 <= chr_length:
+                end_seq_d = end_seq_d + 500
+            else:
+                end_seq_d = chr_length
+
+        DNA_seq = reference.fetch(reference=chr_name, start=start_seq_d, end=end_seq_d)
         DNA_seq = DNA_seq.upper()
 
         token_to_chars = tokenizer.encode_plus(
             DNA_seq, add_special_tokens=False, return_offsets_mapping=True
         )
         mapping_tokens = token_to_chars["offset_mapping"]
-        if start_seq == 0 and end_seq == chr_length:
+
+        if start_seq_d == 0 and end_seq_d == chr_length:
             break
+
     # Find start for tokenize for coordinates of tokens
-    center = start_for_tokenize - start_seq
-    return token_to_chars, center
+    center_s = start_for_tokenize_d - start_seq_d
+    return token_to_chars, center_s
 
 
-def select_part(token_to_chars, center, inp):
+def select_part(token_to_chars, center_s, inp):
     # Select part of sequence
     mapping_tokens = token_to_chars["offset_mapping"]
 
     assert len(mapping_tokens) == len(set(mapping_tokens))
     assert (
-        mapping_tokens[0][0] <= center <= mapping_tokens[-1][-1]
-    ), "no center in tokens"
+        mapping_tokens[0][0] <= center_s <= mapping_tokens[-1][-1]
+    ), "no center_s in tokens"
 
     for interval in mapping_tokens:
-        if interval[0] <= center <= interval[1]:
+        if interval[0] <= center_s <= interval[1]:
             central_token = interval
 
     tokens_for_classing = [central_token]
     count_of_tokens = 1
-    right_len = central_token[1] - center
-    left_len = center - central_token[0]
+    right_len = central_token[1] - center_s
+    left_len = center_s - central_token[0]
 
     while count_of_tokens < inp - 2:
         if (
@@ -229,7 +253,7 @@ def select_part(token_to_chars, center, inp):
                             mapping_tokens.index(tokens_for_classing[0]) - 1
                         ],
                     )
-                    left_len = center - tokens_for_classing[0][0]
+                    left_len = center_s - tokens_for_classing[0][0]
                     count_of_tokens += 1
                 else:
                     tokens_for_classing.append(
@@ -237,7 +261,7 @@ def select_part(token_to_chars, center, inp):
                             mapping_tokens.index(tokens_for_classing[-1]) + 1
                         ]
                     )
-                    right_len = tokens_for_classing[-1][1] - center
+                    right_len = tokens_for_classing[-1][1] - center_s
                     count_of_tokens += 1
             elif right_len < left_len:
                 if tokens_for_classing[-1] != mapping_tokens[-1]:
@@ -246,7 +270,7 @@ def select_part(token_to_chars, center, inp):
                             mapping_tokens.index(tokens_for_classing[-1]) + 1
                         ]
                     )
-                    right_len = tokens_for_classing[-1][1] - center
+                    right_len = tokens_for_classing[-1][1] - center_s
                     count_of_tokens += 1
                 else:
                     tokens_for_classing.insert(
@@ -255,7 +279,7 @@ def select_part(token_to_chars, center, inp):
                             mapping_tokens.index(tokens_for_classing[0]) - 1
                         ],
                     )
-                    left_len = center - tokens_for_classing[0][0]
+                    left_len = center_s - tokens_for_classing[0][0]
                     count_of_tokens += 1
 
     for ind, tok in enumerate(tokens_for_classing):
@@ -270,108 +294,124 @@ def search_exons_end_cds(trans_content, strand):
     # first and last exon - for search intron
     exon_cotent = trans_content[trans_content["type"] == "exon"]
     if exon_cotent.empty:
-        first_exon_start = -1000
-        last_exon_end = -1000
+        first_exon_start_d = -1000
+        last_exon_end_d = -1000
     else:
         if strand == "+":
-            first_exon_start = exon_cotent["start"].values.min()
-            last_exon_end = exon_cotent["end"].values.max()
+            first_exon_start_d = exon_cotent["start"].values.min()
+            last_exon_end_d = exon_cotent["end"].values.max()
         elif strand == "-":
-            first_exon_start = exon_cotent["end"].values.max()
-            last_exon_end = exon_cotent["start"].values.min()
+            first_exon_start_d = exon_cotent["end"].values.max()
+            last_exon_end_d = exon_cotent["start"].values.min()
 
     # first and last CDS - for search UTR
     cds_cotent = trans_content[trans_content["type"] == "CDS"]
     if cds_cotent.empty:
-        first_cds_start = -1000
-        last_cds_end = -1000
+        first_cds_start_d = -1000
+        last_cds_end_d = -1000
     else:
         if strand == "+":
-            first_cds_start = cds_cotent["start"].values.min()
-            last_cds_end = cds_cotent["end"].values.max()
+            first_cds_start_d = cds_cotent["start"].values.min()
+            last_cds_end_d = cds_cotent["end"].values.max()
         elif strand == "-":
-            first_cds_start = cds_cotent["end"].values.max()
-            last_cds_end = cds_cotent["start"].values.min()
+            first_cds_start_d = cds_cotent["end"].values.max()
+            last_cds_end_d = cds_cotent["start"].values.min()
 
-    return first_exon_start, last_exon_end, first_cds_start, last_cds_end
+    return first_exon_start_d, last_exon_end_d, first_cds_start_d, last_cds_end_d
 
 
 # classification + strand
 def classification_forward(
     tokens_for_classing,
     trans_content,
-    first_exon_start,
-    last_exon_end,
-    first_cds_start,
-    last_cds_end,
-    start_for_tokenize,
-    center,
+    first_exon_start_d,
+    last_exon_end_d,
+    first_cds_start_d,
+    last_cds_end_d,
+    start_for_tokenize_d,
+    center_s,
 ):
+    def process_transcipt_element(tr, arr):
+        for t in ["exon", "CDS"]:
+            if tr["type"] == t:
+                arr[
+                    class_lables.index(t),
+                    tr["start"] + DNA2targetshift : tr["end"] + DNA2targetshift,
+                ] = 1
+
+    for i in [first_exon_start_d, last_exon_end_d, start_for_tokenize_d, center_s]:
+        assert i >= 0
+
+    segment2DNAshift = start_for_tokenize_d - center_s
+    assert segment2DNAshift >= 0
+
+    segment2targetshift = -tokens_for_classing[0][0]
+    assert segment2targetshift <= 0
+    assert (
+        tokens_for_classing[0][0] + segment2targetshift == 0
+    ), f"tokens_for_classing[0][0]: {tokens_for_classing[0][0]}, segment2targetshift {segment2targetshift}"
+
+    DNA2targetshift = -segment2DNAshift + segment2targetshift
+    assert DNA2targetshift <= 0
+
+    tokens_start_d = tokens_for_classing[0][0] + segment2DNAshift
+    tokens_end_d = tokens_for_classing[-1][-1] + segment2DNAshift
+    assert tokens_end_d > tokens_start_d
+
+    tokens_for_classing = np.array(tokens_for_classing)
+
     class_lables = ["5UTR", "exon", "intron", "3UTR", "CDS", "intergenic"]
-    classes = np.zeros(shape=(len(class_lables), len(tokens_for_classing)), dtype=int)
-    final_token_class = []
 
-    # prior classify tokens
-    for i, tok in enumerate(tokens_for_classing):
-        token_start = start_for_tokenize - center + tok[0]
-        token_end = start_for_tokenize - center + tok[1]
-        prior_token_class = []
-        if token_start <= last_exon_end and token_end >= first_exon_start:
-            if token_start < first_exon_start or token_end > last_exon_end:
-                prior_token_class.append("intergenic")
-            find_exon = (
-                (trans_content["type"] == "exon")
-                & (trans_content["start"] <= token_end)
-                & (trans_content["end"] >= token_start)
-            )
-            if trans_content[find_exon].empty:
-                prior_token_class.append("intron")
-            else:
-                prior_token_class.append("exon")
-                if first_cds_start != -1000:
-                    # Search UTR
-                    if first_cds_start > first_exon_start:
-                        if token_start < first_cds_start:
-                            prior_token_class.append("5UTR")
-                    if last_cds_end < last_exon_end:
-                        if token_end > last_cds_end:
-                            prior_token_class.append("3UTR")
-                # Search introns
-                on_left_of_exon = (
-                    (trans_content["type"] == "exon")
-                    & (trans_content["start"] > token_start)
-                    & (trans_content["start"] <= token_end)
-                    & (trans_content["start"] > first_exon_start)
-                )
-                if not trans_content[on_left_of_exon].empty:
-                    prior_token_class.append("intron")
-                on_right_of_exon = (
-                    (trans_content["type"] == "exon")
-                    & (trans_content["end"] >= token_start)
-                    & (trans_content["end"] < token_end)
-                    & (trans_content["end"] < last_exon_end)
-                )
-                if not trans_content[on_right_of_exon].empty:
-                    prior_token_class.append("intron")
-        else:
-            prior_token_class.append("intergenic")
-            # Search CDS
-            find_cds = (
-                (trans_content["type"] == "CDS")
-                & (trans_content["start"] <= token_end)
-                & (trans_content["end"] >= token_start)
-            )
-            if not trans_content[find_cds].empty:
-                prior_token_class.append("CDS")
-        final_token_class.append(prior_token_class)
+    classes_t = np.zeros(
+        shape=(len(class_lables), tokens_end_d - tokens_start_d), dtype=np.int8
+    )
 
-    for tok_index, tok in enumerate(tokens_for_classing):
-        for l_index, label in enumerate(class_lables):
-            if label in final_token_class[tok_index]:
-                classes[l_index, tok_index] = 1
-    classes = np.array(classes)
-    classes = np.insert(classes, 0, -100, axis=1)
-    classes = np.insert(classes, classes.shape[1], -100, axis=1)
+    first_exon_start_t = first_exon_start_d + DNA2targetshift
+
+    if first_exon_start_t > 0:
+        classes_t[class_lables.index("intergenic"), :first_exon_start_t] = 1
+
+    last_exon_end_t = last_exon_end_d + DNA2targetshift
+    if last_exon_end_t < tokens_end_d - tokens_start_d - 1:
+        classes_t[
+            class_lables.index("intergenic"),
+            last_exon_end_t + 1 : tokens_end_d - tokens_start_d,
+        ] = 1
+
+    trans_content.apply(process_transcipt_element, arr=classes_t, axis="columns")
+
+    classes_t[class_lables.index("intron"), :] = (
+        classes_t[class_lables.index("intergenic")]
+        + classes_t[class_lables.index("exon")]
+    ) == 0
+
+    if first_cds_start_d > 0:
+        first_cds_start_t = first_cds_start_d + DNA2targetshift
+        assert first_exon_start_t <= first_cds_start_t, "CDS start is not within exon"
+        if first_exon_start_t < first_cds_start_t:
+            classes_t[
+                class_lables.index("5UTR"), first_exon_start_t:first_cds_start_t
+            ] = 1
+
+    if last_cds_end_d > 0:
+        last_cds_end_t = last_cds_end_d + DNA2targetshift
+        assert last_cds_end_t <= last_exon_end_t, "CDS end is not within exon"
+        if last_cds_end_t < last_exon_end_t:
+            classes_t[
+                class_lables.index("3UTR"), last_cds_end_t + 1 : last_exon_end_t + 1
+            ] = 1
+    classes = np.zeros(
+        shape=(len(class_lables), len(tokens_for_classing) + 2), dtype=np.int8
+    )
+
+    classes[:, 0] = -100
+    classes[:, -1] = -100
+
+    for ind, (st, end) in enumerate(tokens_for_classing):
+        classes[:, ind + 1] = classes_t[
+            :, st + segment2targetshift : end + segment2targetshift
+        ].max(axis=1)
+
     return classes
 
 
@@ -379,78 +419,96 @@ def classification_forward(
 def classification_reverse(
     tokens_for_classing,
     trans_content,
-    first_exon_start,
-    last_exon_end,
-    first_cds_start,
-    last_cds_end,
-    start_for_tokenize,
-    center,
+    first_exon_start_d,
+    last_exon_end_d,
+    first_cds_start_d,
+    last_cds_end_d,
+    start_for_tokenize_d,
+    center_s,
 ):
+    def process_transcipt_element(tr, arr):
+        for t in ["exon", "CDS"]:
+            if tr["type"] == t:
+                arr[
+                    class_lables.index(t),
+                    tr["start"] + DNA2targetshift : tr["end"] + DNA2targetshift,
+                ] = 1
+
+    for i in [first_exon_start_d, last_exon_end_d, start_for_tokenize_d, center_s]:
+        assert i >= 0
+
+    segment2DNAshift = start_for_tokenize_d - center_s
+    assert segment2DNAshift >= 0
+
+    segment2targetshift = -tokens_for_classing[0][0]
+    assert segment2targetshift <= 0
+    assert (
+        tokens_for_classing[0][0] + segment2targetshift == 0
+    ), f"tokens_for_classing[0][0]: {tokens_for_classing[0][0]}, segment2targetshift {segment2targetshift}"
+
+    DNA2targetshift = -segment2DNAshift + segment2targetshift
+    assert DNA2targetshift <= 0
+
+    tokens_start_d = tokens_for_classing[0][0] + segment2DNAshift
+    tokens_end_d = tokens_for_classing[-1][-1] + segment2DNAshift
+    assert tokens_end_d > tokens_start_d
+
+    tokens_for_classing = np.array(tokens_for_classing)
+
     class_lables = ["5UTR", "exon", "intron", "3UTR", "CDS", "intergenic"]
-    classes = np.zeros(shape=(len(class_lables), len(tokens_for_classing)), dtype=int)
-    final_token_class = []
 
-    # prior classify tokens
-    for i, tok in enumerate(tokens_for_classing):
-        token_start = start_for_tokenize - center + tok[0]
-        token_end = start_for_tokenize - center + tok[1]
-        prior_token_class = []
-        if token_start <= first_exon_start and token_end >= last_exon_end:
-            if token_start < last_exon_end or token_end > first_exon_start:
-                prior_token_class.append("intergenic")
-            find_exon = (
-                (trans_content["type"] == "exon")
-                & (trans_content["start"] <= token_end)
-                & (trans_content["end"] >= token_start)
-            )
-            if trans_content[find_exon].empty:
-                prior_token_class.append("intron")
-            else:
-                prior_token_class.append("exon")
-                if first_cds_start != -1000:
-                    # Search UTR
-                    if first_cds_start < first_exon_start:
-                        if token_end > first_cds_start:
-                            prior_token_class.append("5UTR")
-                    if last_cds_end > last_exon_end:
-                        if token_start < last_cds_end:
-                            prior_token_class.append("3UTR")
-                # Search introns
-                on_left_of_exon = (
-                    (trans_content["type"] == "exon")
-                    & (trans_content["start"] > token_start)
-                    & (trans_content["start"] <= token_end)
-                    & (trans_content["start"] > last_exon_end)
-                )
-                if not trans_content[on_left_of_exon].empty:
-                    prior_token_class.append("intron")
-                on_right_of_exon = (
-                    (trans_content["type"] == "exon")
-                    & (trans_content["end"] >= token_start)
-                    & (trans_content["end"] < token_end)
-                    & (trans_content["end"] < first_exon_start)
-                )
-                if not trans_content[on_right_of_exon].empty:
-                    prior_token_class.append("intron")
-        else:
-            prior_token_class.append("intergenic")
-            # Search CDS
-            find_cds = (
-                (trans_content["type"] == "CDS")
-                & (trans_content["start"] <= token_end)
-                & (trans_content["end"] >= token_start)
-            )
-            if not trans_content[find_cds].empty:
-                prior_token_class.append("CDS")
-        final_token_class.append(prior_token_class)
+    classes_t = np.zeros(
+        shape=(len(class_lables), tokens_end_d - tokens_start_d), dtype=np.int8
+    )
 
-    for tok_index, tok in enumerate(tokens_for_classing):
-        for l_index, label in enumerate(class_lables):
-            if label in final_token_class[tok_index]:
-                classes[l_index, tok_index] = 1
-    classes = np.array(classes)
-    classes = np.insert(classes, 0, -100, axis=1)
-    classes = np.insert(classes, classes.shape[1], -100, axis=1)
+    first_exon_start_t = first_exon_start_d + DNA2targetshift
+    last_exon_end_t = last_exon_end_d + DNA2targetshift
+
+    if last_exon_end_t > 0:
+        classes_t[class_lables.index("intergenic"), :last_exon_end_t] = 1  # done
+
+    if first_exon_start_t < tokens_end_d - tokens_start_d - 1:
+        classes_t[
+            class_lables.index("intergenic"),
+            first_exon_start_t + 1 : tokens_end_d - tokens_start_d,
+        ] = 1  # done
+
+    trans_content.apply(
+        process_transcipt_element, arr=classes_t, axis="columns"
+    )  # done?
+
+    classes_t[class_lables.index("intron"), :] = (
+        classes_t[class_lables.index("intergenic")]
+        + classes_t[class_lables.index("exon")]
+    ) == 0  # done?
+
+    if first_cds_start_d > 0:
+        first_cds_start_t = first_cds_start_d + DNA2targetshift
+        assert first_exon_start_t >= first_cds_start_t, "CDS start is not within exon"
+        if first_exon_start_t > first_cds_start_t:
+            classes_t[
+                class_lables.index("5UTR"),
+                first_cds_start_t + 1 : first_exon_start_t + 1,
+            ] = 1  # done
+
+    if last_cds_end_d > 0:
+        last_cds_end_t = last_cds_end_d + DNA2targetshift
+        assert last_cds_end_t >= last_exon_end_t, "CDS end is not within exon"
+        if last_cds_end_t > last_exon_end_t:
+            classes_t[class_lables.index("3UTR"), last_exon_end_t:last_cds_end_t] = 1
+
+    classes = np.zeros(
+        shape=(len(class_lables), len(tokens_for_classing) + 2), dtype=np.int8
+    )
+
+    classes[:, 0] = -100
+    classes[:, -1] = -100
+
+    for ind, (st, end) in enumerate(tokens_for_classing):
+        classes[:, ind + 1] = classes_t[
+            :, st + segment2targetshift : end + segment2targetshift
+        ].max(axis=1)
+
     return classes
 
 
@@ -463,42 +521,46 @@ with h5py.File(args.output, "w") as file:
         "FAI=" + args.fai,
         "number of input tokens=" + str(args.inp),
         "output HDF5=" + args.output,
-        "shift=" + str(args.shift),
+        "shift=" + str(shift),
         "tokenizer=" + args.tokenizer_name,
         "radius=" + str(args.radius),
     ]
     array_info = run_info.create_dataset("info", data=array_run_info)
 
     transcripts_records = file.create_group("records")
-    for transcript in valid_transcripts:
+    for transcript in tqdm(valid_transcripts):
         index_sample = 0
         group = transcripts_records.create_group(transcript)
         transcript_name = transcript
-        transcript_content = data_grouped.get_group(transcript)
+        transcript_content = data_grouped.get_group(transcript)  # TODO change to apply
         transcript_info = transcripts_index.loc[transcript]
         gene = transcript_info["Parent"]
         transcript_strand = transcript_info["strand"]
         transcript_chr = transcript_info["seqid"]
         transcript_class = transcript_info["type"]
+
         if transcript_strand == "+":
-            transcript_start = transcript_info["start"]
-            transcript_end = transcript_info["end"]
+            transcript_start_d = transcript_info["start"]
+            transcript_end_d = transcript_info["end"]
         elif transcript_strand == "-":
-            transcript_start = transcript_info["end"]
-            transcript_end = transcript_info["start"]
+            transcript_start_d = transcript_info["end"]
+            transcript_end_d = transcript_info["start"]
+
         assert (
             transcript_strand == "+" or transcript_strand == "-"
         ), "Not identifited strand"
 
         (
-            first_exon_start,
-            last_exon_end,
-            first_cds_start,
-            last_cds_end,
+            first_exon_start_d,
+            last_exon_end_d,
+            first_cds_start_d,
+            last_cds_end_d,
         ) = search_exons_end_cds(transcript_content, transcript_strand)
-        start_for_tokenize = transcript_start
-        end_out = transcript_end
-        start_out = transcript_end
+
+        start_for_tokenize_d = transcript_start_d
+        end_out_d = transcript_end_d
+        start_out_d = transcript_end_d
+
         transcript_stats = [
             transcript_chr,
             gene,
@@ -508,10 +570,10 @@ with h5py.File(args.output, "w") as file:
         ]
 
         if transcript_strand == "+":
-            while end_out <= transcript_end:
-                transcript_part_tokens, center = tokenize_sequence(
+            while end_out_d <= transcript_end_d:
+                transcript_part_tokens, center_s = tokenize_sequence(
                     transcript_name,
-                    start_for_tokenize,
+                    start_for_tokenize_d,
                     args.inp,
                     transcript_chr,
                     chromsizes,
@@ -520,22 +582,30 @@ with h5py.File(args.output, "w") as file:
                 )
                 if len(transcript_part_tokens["offset_mapping"]) < args.inp - 2:
                     break
+
                 assert len(transcript_part_tokens["offset_mapping"]) >= args.inp - 2
+
                 selected_tokens_coor = select_part(
-                    transcript_part_tokens, center, args.inp
+                    transcript_part_tokens, center_s, args.inp
                 )
+
                 classes = classification_forward(
                     selected_tokens_coor,
                     transcript_content,
-                    first_exon_start,
-                    last_exon_end,
-                    first_cds_start,
-                    last_cds_end,
-                    start_for_tokenize,
-                    center,
+                    first_exon_start_d,
+                    last_exon_end_d,
+                    first_cds_start_d,
+                    last_cds_end_d,
+                    start_for_tokenize_d,
+                    center_s,
                 )
-                start_out = start_for_tokenize - center + selected_tokens_coor[0][0]
-                end_out = start_for_tokenize - center + selected_tokens_coor[-1][1]
+
+                start_out_d = (
+                    start_for_tokenize_d - center_s + selected_tokens_coor[0][0]
+                )
+                end_out_d = (
+                    start_for_tokenize_d - center_s + selected_tokens_coor[-1][1]
+                )
                 first_selected_token_index = transcript_part_tokens[
                     "offset_mapping"
                 ].index(selected_tokens_coor[0])
@@ -543,14 +613,13 @@ with h5py.File(args.output, "w") as file:
                     "offset_mapping"
                 ].index(selected_tokens_coor[-1])
 
-                special_tokens = get_service_token_encodings(tokenizer)
                 token_ids, token_types, attention_mask = select_tokens(
                     transcript_part_tokens,
                     first_selected_token_index,
                     last_selected_token_index,
                     special_tokens,
                 )
-                coordinates = [int(start_out), int(end_out)]
+                coordinates = [int(start_out_d), int(end_out_d)]
 
                 subgrp = group.create_group(f"sample_{index_sample}")
 
@@ -566,14 +635,18 @@ with h5py.File(args.output, "w") as file:
                 array_classes = subgrp.create_dataset("classes", data=classes)
 
                 index_sample += 1
-
-                start_for_tokenize += args.shift
+                if args.shift == -1:
+                    start_for_tokenize_d += (
+                        selected_tokens_coor[-1][-1] - selected_tokens_coor[0][0]
+                    ) // 2
+                else:
+                    start_for_tokenize_d += args.shift
 
         elif transcript_strand == "-":
-            while start_out >= transcript_end:
-                transcript_part_tokens, center = tokenize_sequence(
+            while start_out_d >= transcript_end_d:
+                transcript_part_tokens, center_s = tokenize_sequence(
                     transcript_name,
-                    start_for_tokenize,
+                    start_for_tokenize_d,
                     args.inp,
                     transcript_chr,
                     chromsizes,
@@ -583,21 +656,28 @@ with h5py.File(args.output, "w") as file:
                 if len(transcript_part_tokens["offset_mapping"]) < args.inp - 2:
                     break
                 assert len(transcript_part_tokens["offset_mapping"]) >= args.inp - 2
+
                 selected_tokens_coor = select_part(
-                    transcript_part_tokens, center, args.inp
+                    transcript_part_tokens, center_s, args.inp
                 )
+
                 classes = classification_reverse(
                     selected_tokens_coor,
                     transcript_content,
-                    first_exon_start,
-                    last_exon_end,
-                    first_cds_start,
-                    last_cds_end,
-                    start_for_tokenize,
-                    center,
+                    first_exon_start_d,
+                    last_exon_end_d,
+                    first_cds_start_d,
+                    last_cds_end_d,
+                    start_for_tokenize_d,
+                    center_s,
                 )
-                start_out = start_for_tokenize - center + selected_tokens_coor[0][0]
-                end_out = start_for_tokenize - center + selected_tokens_coor[-1][1]
+
+                start_out_d = (
+                    start_for_tokenize_d - center_s + selected_tokens_coor[0][0]
+                )
+                end_out_d = (
+                    start_for_tokenize_d - center_s + selected_tokens_coor[-1][1]
+                )
                 first_selected_token_index = transcript_part_tokens[
                     "offset_mapping"
                 ].index(selected_tokens_coor[0])
@@ -605,14 +685,13 @@ with h5py.File(args.output, "w") as file:
                     "offset_mapping"
                 ].index(selected_tokens_coor[-1])
 
-                special_tokens = get_service_token_encodings(tokenizer)
                 token_ids, token_types, attention_mask = select_tokens(
                     transcript_part_tokens,
                     first_selected_token_index,
                     last_selected_token_index,
                     special_tokens,
                 )
-                coordinates = [int(start_out), int(end_out)]
+                coordinates = [int(start_out_d), int(end_out_d)]
 
                 subgrp = group.create_group(f"sample_{index_sample}")
                 array_info = subgrp.create_dataset("info", data=transcript_stats)
@@ -627,9 +706,9 @@ with h5py.File(args.output, "w") as file:
                 array_classes = subgrp.create_dataset("classes", data=classes)
 
                 index_sample += 1
-
-                start_for_tokenize -= args.shift
-
-                index_sample += 1
-
-                start_for_tokenize -= args.shift
+                if args.shift == -1:
+                    start_for_tokenize_d -= (
+                        selected_tokens_coor[-1][-1] - selected_tokens_coor[0][0]
+                    ) // 2
+                else:
+                    start_for_tokenize_d -= args.shift
