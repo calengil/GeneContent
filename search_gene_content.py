@@ -179,7 +179,7 @@ def tokenize_sequence(
         end_seq_d = chr_length
 
     assert (
-        end_seq_d < chr_length and start_seq_d >= 0
+        end_seq_d <= chr_length and start_seq_d >= 0
     ), "DNA beyond the boundaries of the chromosome"
 
     DNA_seq = reference.fetch(reference=chr_name, start=start_seq_d, end=end_seq_d)
