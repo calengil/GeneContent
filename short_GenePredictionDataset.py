@@ -26,7 +26,7 @@ class short_GeneAnnotationDataset(Dataset):
         sample_name = "sample_" + str(idx)
 
         input_ids = np.array(
-            self.data[sample_name]["token_ids"]
+            self.data[sample_name]["input_ids"]
         )
         token_type_ids = np.array(
             self.data[sample_name]["token_type_ids"]
@@ -37,6 +37,7 @@ class short_GeneAnnotationDataset(Dataset):
         labels = np.array(
             self.data[sample_name]["labels"]
         )
+        labels = labels.T
         labels = labels.astype(np.float32)
             
             
