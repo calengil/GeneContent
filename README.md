@@ -45,7 +45,7 @@ Usage: $ python3 decode_to_bed.py --tokenized_seqs=[hdf5] > output.bed
 
 **[hdf5]**: enter path to search_gene_content.py output file
 
-## GenePredictionDataset.py
+## short_GenePredictionDataset.py
 
 Dependecies: numpy, torch.utils.data, h5py.
 
