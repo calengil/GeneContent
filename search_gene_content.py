@@ -391,7 +391,7 @@ def classification_forward(
         if first_exon_start_t < first_cds_start_t:
             classes_t[
                 class_lables.index("5UTR"), first_exon_start_t:first_cds_start_t
-            ] = 1
+            ] = classes_t[class_lables.index("exon"), first_exon_start_t:first_cds_start_t] == 1
 
     if last_cds_end_d > 0:
         last_cds_end_t = last_cds_end_d + DNA2targetshift
@@ -399,7 +399,7 @@ def classification_forward(
         if last_cds_end_t < last_exon_end_t:
             classes_t[
                 class_lables.index("3UTR"), last_cds_end_t + 1 : last_exon_end_t + 1
-            ] = 1
+            ] = classes_t[class_lables.index("exon"), last_cds_end_t + 1 : last_exon_end_t + 1] == 1
     classes = np.zeros(
         shape=(len(class_lables), len(tokens_for_classing) + 2), dtype=np.int8
     )
@@ -488,14 +488,16 @@ def classification_reverse(
         if first_exon_start_t > first_cds_start_t:
             classes_t[
                 class_lables.index("5UTR"),
-                first_cds_start_t + 1 : first_exon_start_t + 1,
-            ] = 1  # done
+                first_cds_start_t + 1 : first_exon_start_t + 1
+            ] = classes_t[class_lables.index("exon"), first_exon_start_t+ 1:first_exon_start_t + 1] == 1  # done
 
     if last_cds_end_d > 0:
         last_cds_end_t = last_cds_end_d + DNA2targetshift
         assert last_cds_end_t >= last_exon_end_t, "CDS end is not within exon"
         if last_cds_end_t > last_exon_end_t:
-            classes_t[class_lables.index("3UTR"), last_exon_end_t:last_cds_end_t] = 1
+            classes_t[
+                class_lables.index("3UTR"),
+                last_exon_end_t:last_cds_end_t] = classes_t[class_lables.index("exon"), last_exon_end_t:last_cds_end_t] == 1
 
     classes = np.zeros(
         shape=(len(class_lables), len(tokens_for_classing) + 2), dtype=np.int8
@@ -514,23 +516,9 @@ def classification_reverse(
 
 # Let's do it
 with h5py.File(args.output, "w") as file:
-    run_info = file.create_group("run_info")
-    array_run_info = [
-        "GFF=" + args.gff,
-        "FASTA=" + args.fasta,
-        "FAI=" + args.fai,
-        "number of input tokens=" + str(args.inp),
-        "output HDF5=" + args.output,
-        "shift=" + str(shift),
-        "tokenizer=" + args.tokenizer_name,
-        "radius=" + str(args.radius),
-    ]
-    array_info = run_info.create_dataset("info", data=array_run_info)
+    index_sample = 0
 
-    transcripts_records = file.create_group("records")
-    for transcript in tqdm(valid_transcripts):
-        index_sample = 0
-        group = transcripts_records.create_group(transcript)
+    for transcript in tqdm(valid_transcripts):       
         transcript_name = transcript
         transcript_content = data_grouped.get_group(transcript)  # TODO change to apply
         transcript_info = transcripts_index.loc[transcript]
@@ -571,6 +559,7 @@ with h5py.File(args.output, "w") as file:
 
         if transcript_strand == "+":
             while end_out_d <= transcript_end_d:
+                group = file.create_group(f"sample_{index_sample}")
                 transcript_part_tokens, center_s = tokenize_sequence(
                     transcript_name,
                     start_for_tokenize_d,
@@ -621,18 +610,17 @@ with h5py.File(args.output, "w") as file:
                 )
                 coordinates = [int(start_out_d), int(end_out_d)]
 
-                subgrp = group.create_group(f"sample_{index_sample}")
 
-                array_info = subgrp.create_dataset("info", data=transcript_stats)
-                array_coordinates = subgrp.create_dataset(
+                array_info = group.create_dataset("info", data=transcript_stats)
+                array_coordinates = group.create_dataset(
                     "coordinates", data=coordinates
                 )
-                array_ids = subgrp.create_dataset("token_ids", data=token_ids)
-                array_types = subgrp.create_dataset("token_types", data=token_types)
-                array_mask = subgrp.create_dataset(
+                array_ids = group.create_dataset("input_ids", data=token_ids)
+                array_types = group.create_dataset("token_type_ids", data=token_types)
+                array_mask = group.create_dataset(
                     "attention_mask", data=attention_mask
                 )
-                array_classes = subgrp.create_dataset("classes", data=classes)
+                array_classes = group.create_dataset("labels", data=classes)
 
                 index_sample += 1
                 if args.shift == -1:
@@ -644,6 +632,7 @@ with h5py.File(args.output, "w") as file:
 
         elif transcript_strand == "-":
             while start_out_d >= transcript_end_d:
+                group = file.create_group(f"sample_{index_sample}")
                 transcript_part_tokens, center_s = tokenize_sequence(
                     transcript_name,
                     start_for_tokenize_d,
@@ -693,17 +682,16 @@ with h5py.File(args.output, "w") as file:
                 )
                 coordinates = [int(start_out_d), int(end_out_d)]
 
-                subgrp = group.create_group(f"sample_{index_sample}")
-                array_info = subgrp.create_dataset("info", data=transcript_stats)
-                array_coordinates = subgrp.create_dataset(
+                array_info = group.create_dataset("info", data=transcript_stats)
+                array_coordinates = group.create_dataset(
                     "coordinates", data=coordinates
                 )
-                array_ids = subgrp.create_dataset("token_ids", data=token_ids)
-                array_types = subgrp.create_dataset("token_types", data=token_types)
-                array_mask = subgrp.create_dataset(
+                array_ids = group.create_dataset("input_ids", data=token_ids)
+                array_types = group.create_dataset("token_type_ids", data=token_types)
+                array_mask = group.create_dataset(
                     "attention_mask", data=attention_mask
                 )
-                array_classes = subgrp.create_dataset("classes", data=classes)
+                array_classes = group.create_dataset("labels", data=classes)
 
                 index_sample += 1
                 if args.shift == -1:
