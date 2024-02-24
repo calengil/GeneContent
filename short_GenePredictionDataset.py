@@ -52,6 +52,7 @@ class short_GeneAnnotationDataset(Dataset):
             "token_type_ids": token_type_ids,
             "attention_mask": attention_mask,
             "labels": labels,
+            "labels_mask": labels.min(axis=1) != -100,
         }
 
     def close(self):
