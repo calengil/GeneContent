@@ -3,7 +3,7 @@
 
 Dependecies: argparse, h5py, numpy, pandas, pysam, transformers.
 
-Usage: $ python3 search_gene_content.py --chrs=[chromosomes] --gff=[gff] --fasta=[fasta] --fai=[fai] --inp=[tokens] --output=[output] --shift=[shift] --tokenizer_name=[tokenizer_name] --radius=[radius] 
+Usage: $ python3 search_gene_content.py --chrs=[chromosomes] --gff=[gff] --fasta=[fasta] --fai=[fai] --output=[output] --tokenizer_name=[tokenizer_name]
 
 **[chromosomes]**: enter path to txt file with chosen chromosomes names
 
@@ -13,15 +13,9 @@ Usage: $ python3 search_gene_content.py --chrs=[chromosomes] --gff=[gff] --fasta
 
 **[fai]**: enter path to fai or chrom.sizes file
 
-**[tokens]**: enter number of input tokens (default 512)
-
 **[output]**: enter path to hdf5 file
 
-**[shift]**: enter step between tokenization points (default half the length of the DNA segment)
-
 **[tokenizer_name]**: enter your tokenizer (default "AIRI-Institute/gena-lm-bert-large-t2t")
-
-**[radius]**: enter coefficient for choose part of DNA (default 64)
 
 There are some groups in the output hdf5 file:
 
