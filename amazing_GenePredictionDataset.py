@@ -11,7 +11,7 @@ class GeneAnnotationDataset(Dataset):
         tokenizer="AIRI-Institute/gena-lm-bigbird-base-t2t",
         max_tokens=4096,
         shift=2047,
-        label_number=3,
+        label_number=6,
     ):
 
         self.data = h5py.File(targets_file, "r")
