@@ -21,7 +21,7 @@ class short_GeneAnnotationDataset(Dataset):
     def __getitem__(self, idx):
         assert idx < self.samples
 
-        sample_name = "sample_" + str(idx)
+        sample_name = "transcript_" + str(idx)
 
         input_ids = np.array(
             self.data[sample_name]["input_ids"]
