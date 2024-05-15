@@ -9,13 +9,11 @@ class short_GeneAnnotationDataset(Dataset):
         self,
         targets_file,
         tokenizer="AIRI-Institute/gena-lm-bert-large-t2t",
-        max_seq_len=512,
     ):
         self.data = h5py.File(targets_file, "r")
 
         self.samples = len(list(self.data.keys()))
         self.tokenizer = tokenizer
-        self.max_seq_len = max_seq_len
 
     def __len__(self):
         return self.samples
@@ -42,9 +40,8 @@ class short_GeneAnnotationDataset(Dataset):
             
             
         assert (
-            len(input_ids) == self.max_seq_len
-            and len(token_type_ids) == self.max_seq_len
-            and len(attention_mask) == self.max_seq_len
+            len(input_ids) == len(token_type_ids)
+            and len(token_type_ids) == len(attention_mask)
         )
 
         return {
