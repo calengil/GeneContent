@@ -10,7 +10,7 @@ class GeneAnnotationDataset(Dataset):
         targets_file,
         tokenizer="AIRI-Institute/gena-lm-bigbird-base-t2t",
         max_tokens=4096,
-        shift=255,
+        shift=2047,
         label_number=3,
     ):
 
